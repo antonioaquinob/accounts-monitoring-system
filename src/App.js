@@ -4,6 +4,7 @@ import {collection, getDocs, addDoc, updateDoc, deleteDoc, doc} from 'firebase/f
 import {db} from './firebaseConfig.js'
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
+import { settings } from 'firebase/analytics';
 function App() {
   const [cardName, setCardName] = useState('')
   const [bankName, setBankName] = useState('')
@@ -13,8 +14,143 @@ function App() {
   const [dueDate, setDueDate] = useState(new Date())
   const [cardList, setCardList] = useState([]);
   const [cardEditID, setCardEditID] = useState(null)
+
+  
+  const [transCardName, setTransCardName] = useState('');
+  const [transaction, setTransaction] = useState('')
+  const [merchantName, setMerchantName] = useState('')
+  const [amount, setAmount] = useState(0)
+  const [dateOfTrans, setDateOfTrans] = useState(new Date())
+  const [transactionList, setTransactionList] = useState([]);
+  const [transEditID, setTransEditID] = useState(null)
   
   const [currentPage, setCurrentPage] = useState('Transaction')
+
+  {/* settings management */}
+  const [settingsList, setSettingsList] = useState([])
+  const [remindCardDueDate, setRemindCardDueDate] = useState(0)
+  const [settingsListEditID, setSettingsListEditID] = useState(null)
+
+  const getDueSoonTransactions = (transactions, cards, remindDays) => {
+  const today = new Date();
+
+  return transactions.filter(trans => {
+    const transDate = new Date(trans.transactionDate);
+    const card = cards.find(c => c.cardName === trans.cardName);
+    if (!card) return false;
+
+    const dueDate = new Date(card.dueDate);
+    // Align due date to current year and month
+    dueDate.setFullYear(today.getFullYear());
+    dueDate.setMonth(today.getMonth());
+
+    const diffInDays = Math.ceil((dueDate - transDate) / (1000 * 60 * 60 * 24));
+
+    return (
+      transDate.getMonth() === today.getMonth() &&
+      transDate.getFullYear() === today.getFullYear() &&
+      diffInDays >= 0 &&
+      diffInDays <= remindDays
+    );
+  });
+};
+
+  const saveSettingsToLocalStorage = ()=>{
+    localStorage.setItem('settingsList', JSON.stringify(settingsList))
+  }
+  useEffect(()=>{
+    const fetchSettings = async ()=>{
+      try {
+        const firebaseSettingsData = await getDocs(collection(db, 'settingsList'));
+      const settings = firebaseSettingsData.docs.map(setting =>({
+        id:setting.id,
+        ...setting.data()
+      }));
+
+      setSettingsList(settings)
+      }
+      catch(err){
+        // will go here whenever fetching data from db encoutered error(s)
+        const localData = localStorage.getItem('settingsList');
+        if (localData){
+          setSettingsList(JSON.parse(localData))
+        }
+        return toast.error('Error fetching data, local storage will be used.');
+      }
+    };
+
+    fetchSettings();
+  }, [])
+
+  useEffect(()=>{
+    saveSettingsToLocalStorage();
+  }, [settingsList]);
+
+  
+  const startSettingsEdit = (setting) =>{
+    setSettingsListEditID(setting.id)
+    setRemindCardDueDate(setting.remindCardDueDate)
+  }
+
+  const flushSettingsData= ()=>{
+    setRemindCardDueDate(0)
+    setSettingsListEditID(null)
+  }
+  const addEditSettings = async ()=>{
+    
+    if(settingsListEditID === null){
+      // Add new card
+      const newSettings = {
+        remindCardDueDate: Number(remindCardDueDate),
+    }
+    try{ 
+      const addSettingsRef = await addDoc(collection(db, 'settingsList'), newSettings)
+      setSettingsList([...settingsList, {...newSettings, id: addSettingsRef.id}])
+      toast.success('✅ Settings details successfully added');
+    }catch(err){
+      console.error('Firestore error:', err)
+      toast.error('❌ Failed to add settings. Please try again.');
+    }
+    flushSettingsData()
+  }else{
+    // edit existing settings
+    const settingsRef = doc(db, 'settingsList', cardEditID)
+    const updateSettings = {
+        remindCardDueDate: Number(remindCardDueDate),
+    }
+    
+    try{ 
+      const updateSettingsData = await updateDoc(settingsRef, updateSettings)
+      setSettingsList(settingsList.map(
+        setting => setting.id === settingsListEditID
+          ? { ...setting, ...updateSettingsData }
+          : setting
+      ));
+      toast.success('✅ Settings details successfully updated');
+    }catch(err){
+      console.error('Firestore error:', err)
+      toast.error('❌ Failed to update settings. Please try again.');
+    }
+    flushSettingsData();
+  }
+}
+const deleteSettings = async (id) => {
+    const confirmDelete = window.confirm('Are you sure you want to delete this settings?');
+
+    if (!confirmDelete) {
+      return toast.info('❕ Deletion canceled');
+    }
+  
+    try {
+      await deleteDoc(doc(db, 'settingsList', id));
+      setSettingsList(settingsList.filter(setting => setting.id !== id));
+      toast.success('🗑️ Settings deleted successfully');
+    } catch (error) {
+      console.error('Delete failed:', error);
+      toast.error('❌ Failed to delete settings. Please try again.');
+    }
+  };
+  {/* Card management */}
 
   const saveCardToLocalStorage = ()=>{
     localStorage.setItem('cardList', JSON.stringify(cardList))
@@ -78,17 +214,6 @@ function App() {
 
     if (!(dueDate instanceof Date) || isNaN(dueDate)) {
       return toast.error('🚫 Invalid due date');
-    }
-
-    // Check if statement date is after due date
-    if (statementDate > dueDate) {
-      return toast.error('🚫 Statement date must be before due date');
-    }
-
-    // Optional: warn if due date is in the past
-    const today = new Date();
-    if (dueDate < today) {
-      return toast.error('🚫 Due date cannot be in the past');
     }
     
     if(cardEditID === null){
@@ -155,16 +280,9 @@ const deleteCard = async (id) => {
     }
   };
 
-  {/* Transactions */}
+  {/* Transactions management*/}
   
-  const [transCardName, setTransCardName] = useState('');
-  const [transaction, setTransaction] = useState('')
-  const [merchantName, setMerchantName] = useState('')
-  const [amount, setAmount] = useState(0)
-  const [dateOfTrans, setDateOfTrans] = useState(new Date())
-  const [transactionList, setTransactionList] = useState([]);
-  const [transEditID, setTransEditID] = useState(null)
-  
+
   const saveTranssactionToLocalStorage = ()=>{
     localStorage.setItem('transactionList', JSON.stringify(transactionList))
   }
@@ -244,7 +362,7 @@ const deleteCard = async (id) => {
     }
     flushTransData()
   }else{
-    // edit existing card
+    // edit existing trans
     const transRef = doc(db, 'transactionList', transEditID)
     const updateTrans = {
         transaction: transaction,
@@ -286,13 +404,39 @@ const deleteTrans = async (id) => {
       toast.error('❌ Failed to delete transaction. Please try again.');
     }
   };
+
+  const dueSoonTransactions = getDueSoonTransactions(transactionList, cardList, parseInt(remindCardDueDate));
+
   return (
     <div className="App">
      <div className='navButton'>
         <button onClick={()=>setCurrentPage('Card')}>Card management</button>
         <button onClick={()=>setCurrentPage('Transaction')}>Transaction management</button>
+        <button onClick={()=>setCurrentPage('Settings')}>Settings</button>
      </div>
-    
+    {/* -- Settings management -- */}
+    {currentPage === 'Settings' &&(
+      <div>
+        <div className='settings-panel'>
+            <input
+            type="number"
+            placeholder="Enter days to remind due date"
+            value={remindCardDueDate}
+            onChange={(e) => setRemindCardDueDate(e.target.value)}
+            />
+            <button onClick={addEditSettings}>{settingsListEditID === null ? 'Add' : 'Update'}</button>
+        </div>
+        {settingsList.map(setting=>(
+          <div key={setting.id}>
+            <p>Remind card due date before: {setting.remindCardDueDate}</p>
+
+            {settingsListEditID === null && <button onClick={()=>startSettingsEdit(setting)}>Edit</button>}
+            <button onClick={()=>deleteSettings(setting.id)}>Delete</button>
+          </div>
+        ))}
+      </div>
+    )}
+
     {/* --Card management -- */}
     {currentPage === 'Card' && (
       <div>
@@ -339,11 +483,11 @@ const deleteTrans = async (id) => {
 
         {cardList.map(card=>(
           <div key={card.id}>
-            <p>{card.cardName}</p>
-            <p>{card.bankName}</p>
-            <p>{card.lastFour}</p>
-            <p>{card.statementDate}</p>
-            <p>{card.dueDate}</p>
+            <p>Card name: {card.cardName}</p>
+            <p>Bank name: {card.bankName}</p>
+            <p>Card's last four digit: {card.lastFour}</p>
+            <p>Card's statement date: {card.statementDate}</p>
+            <p>Card's due date: {card.dueDate}</p>
 
             {cardEditID === null && <button onClick={()=>startCardEdit(card)}>Edit</button>}
             <button onClick={()=>deleteCard(card.id)}>Delete</button>
@@ -396,15 +540,44 @@ const deleteTrans = async (id) => {
         </div>
         {transactionList.map(trans=>(
           <div key={trans.id}>
-            <p>{trans.transaction}</p>
-            <p>{trans.cardName}</p>
-            <p>{trans.merchantName}</p>
-            <p>{trans.amount}</p>
-            <p>{trans.transactionDate}</p>
+            <p>Transaction: {trans.transaction}</p>
+            <p>Card used: {trans.cardName}</p>
+            <p>Merchant name:{trans.merchantName}</p>
+            <p>Amount: {trans.amount}</p>
+            <p>Transaction date: {trans.transactionDate}</p>
             {transEditID === null && <button onClick={()=>startTransEdit(trans)}>Edit</button>}
             <button onClick={()=>deleteTrans(trans.id)}>Delete</button>
           </div>
         ))}
+
+        {currentPage === 'Transaction' && (
+  <>
+    {/* ...existing transaction code... */}
+
+    {/* 🔔 Due Soon Transactions Section */}
+    <div className='due-soon-section'>
+      <h2>🔔 Transactions Near Due Date</h2>
+      {dueSoonTransactions.length === 0 ? (
+        <p>No upcoming due dates based on recent transactions.</p>
+      ) : (
+        dueSoonTransactions.map((trans) => {
+          const relatedCard = cardList.find(c => c.cardName === trans.cardName);
+          return (
+            <div key={trans.id} className='due-soon-card'>
+              <p><strong>Card:</strong> {trans.cardName}</p>
+              <p><strong>Transaction:</strong> {trans.transaction}</p>
+              <p><strong>Merchant:</strong> {trans.merchantName}</p>
+              <p><strong>Amount:</strong> ₱{trans.amount}</p>
+              <p><strong>Transaction Date:</strong> {trans.transactionDate}</p>
+              <p><strong>Due Date:</strong> {relatedCard?.dueDate}</p>
+            </div>
+          );
+        })
+      )}
+    </div>
+  </>
+)}
+
       </div>
     )}
 
