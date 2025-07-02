@@ -4,7 +4,7 @@ import {collection, getDocs, addDoc, updateDoc, deleteDoc, doc} from 'firebase/f
 import {db} from './firebaseConfig.js'
 import { ToastContainer, toast } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
-import { settings } from 'firebase/analytics';
+import { analytics } from 'firebase/analytics';
 function App() {
   const [cardName, setCardName] = useState('')
   const [bankName, setBankName] = useState('')
@@ -20,10 +20,44 @@ function App() {
   const [transaction, setTransaction] = useState('')
   const [merchantName, setMerchantName] = useState('')
   const [amount, setAmount] = useState(0)
+  const [isTransactionCompleted, setIsTransactionCompleted] = useState(false);
   const [dateOfTrans, setDateOfTrans] = useState(new Date())
   const [transactionList, setTransactionList] = useState([]);
   const [transEditID, setTransEditID] = useState(null)
-  
+
+  const saveTransactionToLocalStorage = ()=>{
+    localStorage.setItem('transactionList', JSON.stringify(transactionList))
+  }
+
+  useEffect(()=>{
+    const fetchTransInfo = async ()=>{
+      try {
+        const firebaseTransData = await getDocs(collection(db, 'transactionList'));
+      const transaction = firebaseTransData.docs.map(trans =>({
+        id:trans.id,
+        ...trans.data()
+      }));
+
+      setTransactionList(transaction)
+      }
+      catch(err){
+        // will go here whenever fetching data from db encoutered error(s)
+        const localData = localStorage.getItem('transactionList');
+        if (localData){
+          setTransactionList(JSON.parse(localData))
+        }
+        return toast.error('Error fetching data, local storage will be used.');
+      }
+    };
+
+    fetchTransInfo();
+  }, [])
+
+  useEffect(()=>{
+    saveTransactionToLocalStorage();
+  }, [transactionList]);
+
+
   const [currentPage, setCurrentPage] = useState('Transaction')
 
   {/* settings management */}
@@ -34,53 +68,69 @@ function App() {
   const getDueSoonTransactions = (transactions, cards, remindDays) => {
   const today = new Date();
 
-  return transactions.filter(trans => {
-    const transDate = new Date(trans.transactionDate);
+  return transactions.filter((trans) => {
     const card = cards.find(c => c.cardName === trans.cardName);
-    if (!card) return false;
+    if (!card || !card.dueDate) return false;
 
     const dueDate = new Date(card.dueDate);
-    // Align due date to current year and month
-    dueDate.setFullYear(today.getFullYear());
-    dueDate.setMonth(today.getMonth());
+    const timeDiff = dueDate - today;
+    const dayDiff = Math.floor(timeDiff / (1000 * 60 * 60 * 24));
 
-    const diffInDays = Math.ceil((dueDate - transDate) / (1000 * 60 * 60 * 24));
+    const shouldRemind = dayDiff >= 0 && dayDiff <= remindDays;
 
-    return (
-      transDate.getMonth() === today.getMonth() &&
-      transDate.getFullYear() === today.getFullYear() &&
-      diffInDays >= 0 &&
-      diffInDays <= remindDays
-    );
+    console.log(`📌 Transaction: ${trans.transaction}`);
+    console.log(`📌 Remind: ${remindDays}`);
+    console.log(`📅 Due Date: ${dueDate.toISOString().split('T')[0]}`);
+    console.log(`📅 Today: ${today.toISOString().split('T')[0]}`);
+    console.log(`🧮 Days left: ${dayDiff}`);
+    console.log(`✅ Should Remind? ${shouldRemind}`);
+
+    return shouldRemind;
   });
+};
+
+
+const toggleCompletion = async (trans) => {
+  const updated = { ...trans, isCompleted: !trans.isCompleted };
+  const transRef = doc(db, 'transactionList', trans.id);
+  await updateDoc(transRef, { isCompleted: updated.isCompleted });
+  setTransactionList(transactionList.map(t => t.id === trans.id ? updated : t));
 };
 
   const saveSettingsToLocalStorage = ()=>{
     localStorage.setItem('settingsList', JSON.stringify(settingsList))
   }
-  useEffect(()=>{
-    const fetchSettings = async ()=>{
-      try {
-        const firebaseSettingsData = await getDocs(collection(db, 'settingsList'));
-      const settings = firebaseSettingsData.docs.map(setting =>({
-        id:setting.id,
+  useEffect(() => {
+  const fetchSettings = async () => {
+    try {
+      const firebaseSettingsData = await getDocs(collection(db, 'settingsList'));
+      const settings = firebaseSettingsData.docs.map(setting => ({
+        id: setting.id,
         ...setting.data()
       }));
 
-      setSettingsList(settings)
-      }
-      catch(err){
-        // will go here whenever fetching data from db encoutered error(s)
-        const localData = localStorage.getItem('settingsList');
-        if (localData){
-          setSettingsList(JSON.parse(localData))
-        }
-        return toast.error('Error fetching data, local storage will be used.');
-      }
-    };
+      setSettingsList(settings);
 
-    fetchSettings();
-  }, [])
+      if (settings.length > 0) {
+        setRemindCardDueDate(settings[0].remindCardDueDate); // ✅ auto sync with latest settings
+      }
+
+    } catch (err) {
+      const localData = localStorage.getItem('settingsList');
+      if (localData) {
+        const parsed = JSON.parse(localData);
+        setSettingsList(parsed);
+        if (parsed.length > 0) {
+          setRemindCardDueDate(parsed[0].remindCardDueDate); // ✅ fallback to local storage
+        }
+      }
+      return toast.error('Error fetching data, local storage will be used.');
+    }
+  };
+
+  fetchSettings();
+}, []);
+
 
   useEffect(()=>{
     saveSettingsToLocalStorage();
@@ -114,7 +164,7 @@ function App() {
     flushSettingsData()
   }else{
     // edit existing settings
-    const settingsRef = doc(db, 'settingsList', cardEditID)
+    const settingsRef = doc(db, 'settingsList', settingsListEditID)
     const updateSettings = {
         remindCardDueDate: Number(remindCardDueDate),
     }
@@ -282,39 +332,6 @@ const deleteCard = async (id) => {
 
   {/* Transactions management*/}
   
-
-  const saveTranssactionToLocalStorage = ()=>{
-    localStorage.setItem('transactionList', JSON.stringify(transactionList))
-  }
-
-  useEffect(()=>{
-    const fetchTransInfo = async ()=>{
-      try {
-        const firebaseTransData = await getDocs(collection(db, 'transactionList'));
-      const transaction = firebaseTransData.docs.map(trans =>({
-        id:trans.id,
-        ...trans.data()
-      }));
-
-      setTransactionList(transaction)
-      }
-      catch(err){
-        // will go here whenever fetching data from db encoutered error(s)
-        const localData = localStorage.getItem('transactionList');
-        if (localData){
-          setTransactionList(JSON.parse(localData))
-        }
-        return toast.error('Error fetching data, local storage will be used.');
-      }
-    };
-
-    fetchTransInfo();
-  }, [])
-
-  useEffect(()=>{
-    saveTranssactionToLocalStorage();
-  }, [transactionList]);
-
   const startTransEdit = (trans) =>{
     setTransEditID(trans.id)
     setTransaction(trans.transaction)
@@ -322,6 +339,8 @@ const deleteCard = async (id) => {
     setAmount(trans.amount)
     setMerchantName(trans.merchantName)
     setDateOfTrans(new Date(trans.transactionDate)); // ✅ Convert string to Date
+    setIsTransactionCompleted(trans.isCompleted ?? false); // defaults to false if undefined
+
   }
 
   const flushTransData= ()=>{
@@ -350,7 +369,8 @@ const deleteCard = async (id) => {
         cardName: transCardName,
         merchantName: merchantName,
         amount: Number(amount),
-        transactionDate: dateOfTrans.toISOString().split('T')[0],             // format: 'YYYY-MM-DD'
+        transactionDate: dateOfTrans.toISOString().split('T')[0],  // format: 'YYYY-MM-DD'
+        isCompleted: isTransactionCompleted,
     }
     try{ 
       const addTransRef = await addDoc(collection(db, 'transactionList'), newTrans)
@@ -369,7 +389,8 @@ const deleteCard = async (id) => {
         cardName: transCardName,
         merchantName: merchantName,
         amount: Number(amount),
-        transactionDate: dateOfTrans.toISOString().split('T')[0],             // format: 'YYYY-MM-DD'
+        transactionDate: dateOfTrans.toISOString().split('T')[0],// format: 'YYYY-MM-DD'
+        isCompleted: isTransactionCompleted,
     }
     
     try{ 
@@ -535,6 +556,14 @@ const deleteTrans = async (id) => {
             value={dateOfTrans.toISOString().split('T')[0]}
             onChange={(e) => setDateOfTrans(new Date(e.target.value))}
             />
+            <label>
+              <input
+                type="checkbox"
+                checked={isTransactionCompleted}
+                onChange={(e) => setIsTransactionCompleted(e.target.checked)}
+              />
+              Completed
+            </label>
 
             <button onClick={addEditTrans}>{transEditID === null ? 'Add' : 'Update'}</button>
         </div>
@@ -545,7 +574,9 @@ const deleteTrans = async (id) => {
             <p>Merchant name:{trans.merchantName}</p>
             <p>Amount: {trans.amount}</p>
             <p>Transaction date: {trans.transactionDate}</p>
+            <p>Status: {trans.isCompleted ? '✅ Completed' : '❌ Pending'}</p>
             {transEditID === null && <button onClick={()=>startTransEdit(trans)}>Edit</button>}
+            <button onClick={() => toggleCompletion(trans)}>Mark as {trans.isCompleted ? 'Pending' : 'Done'}</button>
             <button onClick={()=>deleteTrans(trans.id)}>Delete</button>
           </div>
         ))}
@@ -554,32 +585,60 @@ const deleteTrans = async (id) => {
   <>
     {/* ...existing transaction code... */}
 
-    {/* 🔔 Due Soon Transactions Section */}
+   {/* 🔔 Due Soon Transactions Section */}
     <div className='due-soon-section'>
       <h2>🔔 Transactions Near Due Date</h2>
-      {dueSoonTransactions.length === 0 ? (
+      {dueSoonTransactions.filter(trans => !trans.isCompleted).length === 0 ? (
         <p>No upcoming due dates based on recent transactions.</p>
       ) : (
-        dueSoonTransactions.map((trans) => {
-          const relatedCard = cardList.find(c => c.cardName === trans.cardName);
-          return (
-            <div key={trans.id} className='due-soon-card'>
-              <p><strong>Card:</strong> {trans.cardName}</p>
-              <p><strong>Transaction:</strong> {trans.transaction}</p>
-              <p><strong>Merchant:</strong> {trans.merchantName}</p>
-              <p><strong>Amount:</strong> ₱{trans.amount}</p>
-              <p><strong>Transaction Date:</strong> {trans.transactionDate}</p>
-              <p><strong>Due Date:</strong> {relatedCard?.dueDate}</p>
-            </div>
-          );
-        })
+        dueSoonTransactions
+          .filter(trans => !trans.isCompleted)
+          .map((trans) => {
+            const relatedCard = cardList.find(c => c.cardName === trans.cardName);
+            return (
+              <div key={trans.id} className='due-soon-card'>
+                <p><strong>Card:</strong> {trans.cardName}</p>
+                <p><strong>Transaction:</strong> {trans.transaction}</p>
+                <p><strong>Merchant:</strong> {trans.merchantName}</p>
+                <p><strong>Amount:</strong> ₱{trans.amount}</p>
+                <p><strong>Transaction Date:</strong> {trans.transactionDate}</p>
+                <p><strong>Due Date:</strong> {relatedCard?.dueDate}</p>
+                <p>Status: {trans.isCompleted ? '✅ Completed' : '❌ Pending'}</p>
+                <button onClick={() => toggleCompletion(trans)}>
+                  Mark as {trans.isCompleted ? 'Pending' : 'Done'}
+                </button>
+              </div>
+            );
+          })
       )}
+    </div>
+
+    {/* ✅ Dues completed*/}
+     <div className='due-completed-section'>
+      <h2>✅ Dues completed</h2>
+      
+        {transactionList.filter(tran=>tran.isCompleted).map(tranComp=> {
+          const relatedCard = cardList.find(c => c.cardName === tranComp.cardName);
+          return (
+            <div key={tranComp.id} className='due-soon-card'>
+              <p><strong>Card:</strong> {tranComp.cardName}</p>
+              <p><strong>Transaction:</strong> {tranComp.transaction}</p>
+              <p><strong>Merchant:</strong> {tranComp.merchantName}</p>
+              <p><strong>Amount:</strong> ₱{tranComp.amount}</p>
+              <p><strong>Transaction Date:</strong> {tranComp.transactionDate}</p>
+              <p><strong>Due Date:</strong> {relatedCard?.dueDate}</p>
+              <p>Status: {tranComp.isCompleted ? '✅ Completed' : '❌ Pending'}</p>
+              <button onClick={() => toggleCompletion(tranComp)}>Mark as {tranComp.isCompleted ? 'Pending' : 'Done'}</button>
+            </div>
+
+          )
+        })}
     </div>
   </>
 )}
 
-      </div>
-    )}
+  </div>
+  )}
 
    <ToastContainer
       position="top-right"
